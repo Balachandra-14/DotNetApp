@@ -1,0 +1,53 @@
+name: Windows App with Linux-based Emulator
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-run:
+    runs-on: windows-2025
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Enable WSL and install Ubuntu
+      run: |
+        wsl --install -d Ubuntu
+        wsl --set-default Ubuntu
+        wsl -e sudo apt-get update
+
+    - name: Install Docker in WSL
+      run: |
+        wsl -e sh -c "
+          sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release &&
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg &&
+          echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+          https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" | \
+          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null &&
+          sudo apt-get update &&
+          sudo apt-get install -y docker-ce docker-ce-cli containerd.io &&
+          sudo service docker start
+        "
+
+    - name: Run Event Hub Emulator in WSL
+      run: |
+        wsl -e sh -c "
+          docker run -d --rm --name azurite -p 10000:10000 mcr.microsoft.com/azure-storage/azurite &&
+          docker run -d --rm --name eventhubs-emulator -p 9092:9092 -e ACCEPT_EULA=Y mcr.microsoft.com/azure-messaging/eventhubs-emulator
+        "
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    - name: Build and run .NET Windows application
+      run: |
+        dotnet build ../../DotNetApp/DotNetApp.csproj -c Release
+        dotnet run --project ./YourApp/YourApp.csproj
+    - name: Test .NET Application
+      run: |
+        dotnet build ../../DotNetApp.Test/DotNetApp.Test.csproj -c Release
+        dotnet test ./MyApp.Test/MyApp.Test.csproj
