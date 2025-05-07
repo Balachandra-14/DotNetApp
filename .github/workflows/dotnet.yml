@@ -1,9 +1,8 @@
 name: Windows App with Linux-based Emulator
 
 on:
-  push:
-    branches: [main]
-
+  workflow_dispatch:
+  
 jobs:
   build-and-run:
     runs-on: windows-2025
@@ -11,43 +10,57 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
+      
+    - name: install wsl distro
+      run: wsl --install Ubuntu
 
-    - name: Enable WSL and install Ubuntu
-      run: |
-        wsl --install -d Ubuntu
-        wsl --set-default Ubuntu
-        wsl -e sudo apt-get update
+    - name: prevent wsl shutdown
+      run:  wsl -d Ubuntu  --exec dbus-launch true
 
     - name: Install Docker in WSL
-      run: |
-        wsl -e sh -c "
-          sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release &&
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg &&
-          echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
-          https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\" | \
-          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null &&
-          sudo apt-get update &&
-          sudo apt-get install -y docker-ce docker-ce-cli containerd.io &&
-          sudo service docker start
-        "
+      shell: pwsh
+      run: >
+         wsl -e sh -c '
+         sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release &&
+         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg &&
+         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" |
+         sudo tee /etc/apt/sources.list.d/docker.list > /dev/null &&
+         sudo apt-get update &&
+         sudo apt-get install -y docker-ce docker-ce-cli containerd.io &&
+         sudo service docker start
+         '
 
     - name: Run Event Hub Emulator in WSL
+      shell: pwsh
       run: |
-        wsl -e sh -c "
-          docker run -d --rm --name azurite -p 10000:10000 mcr.microsoft.com/azure-storage/azurite &&
-          docker run -d --rm --name eventhubs-emulator -p 9092:9092 -e ACCEPT_EULA=Y mcr.microsoft.com/azure-messaging/eventhubs-emulator
-        "
+        wsl -e bash -c "sudo docker network create messaging-network"
+        wsl -e bash -c "sudo docker run -d --rm --name azurite --network messaging-network -p 10000:10000 -p 10001:10001 -p 10002:10002 mcr.microsoft.com/azure-storage/azurite"
+        wsl -e bash -c "sudo docker run -d --rm --name eventhubs-emulator --network messaging-network  -e BLOB_SERVER=azurite -e METADATA_SERVER=azurite  -e ACCEPT_EULA=Y -p 5672:5672 -p 9092:9092 -p 5300:5300 mcr.microsoft.com/azure-messaging/eventhubs-emulator"
+
+    - name: wsl docker ps
+      run: |
+        wsl docker ps
+
+    - name: wsl docker logs
+      run: |
+        sleep 2
+        wsl docker logs eventhubs-emulator
 
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
         dotnet-version: 8.0.x
-
-    - name: Build and run .NET Windows application
+        
+    - name: Build .NET App
       run: |
-        dotnet build ../../DotNetApp/DotNetApp.csproj -c Release
-        dotnet run --project ./YourApp/YourApp.csproj
+        dotnet build ./DotNetApp/DotNetApp.csproj
+
+    - name: Run .NET Web API in background
+      shell: pwsh
+      run: |
+        Start-Process dotnet -ArgumentList "run --project ./DotNetApp/DotNetApp.csproj" -PassThru -WindowStyle Hidden | ForEach-Object { $_.Id } | Out-File pid.txt
+
     - name: Test .NET Application
       run: |
-        dotnet build ../../DotNetApp.Test/DotNetApp.Test.csproj -c Release
-        dotnet test ./MyApp.Test/MyApp.Test.csproj
+        sleep 5
+        dotnet test ./DotNetApp.Test/DotNetApp.Test.csproj
